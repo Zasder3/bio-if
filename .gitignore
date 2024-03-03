@@ -1,0 +1,9 @@
+.idea
+.vscode
+__pycache__
+dist
+build
+*.egg-info
+*.egg
+*.gz
+src/bio_if/data/TAPE/SS3/secondary_structure
