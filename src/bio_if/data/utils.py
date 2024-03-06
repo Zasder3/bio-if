@@ -1,5 +1,6 @@
-# import torch data utilities
-from typing import Callable
+import os
+from typing import Callable, Union
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 
@@ -23,7 +24,7 @@ class FastaDataset(Dataset):
             tokenizer_fn: Callable, function to tokenize sequences
         """
         self.fasta_file = fasta_file
-        assert split in ["train", "val", "test"]
+        assert split in ["train", "val", "test", None]
         self.split = split
         self.tokenizer_fn = tokenizer_fn
         self.seqs = []
@@ -37,7 +38,10 @@ class FastaDataset(Dataset):
             lines = f.readlines()
             for i in range(0, len(lines), 2):
                 # ensure in split
-                if self._header_to_split(lines[i]) == self.split:
+                if (
+                    self._header_to_split(lines[i]) == self.split
+                    or self.split is None
+                ):
                     # add data to seqs and labels
                     seq = lines[i + 1].strip()
                     label = self._header_to_label(lines[i])
@@ -87,3 +91,26 @@ class FastaDataset(Dataset):
             drop_last=drop_last,
             collate_fn=self.collate_fn,
         )
+
+
+class CachedEmbedTokenizer:
+    def __init__(self, cache: str):
+        """
+        Load fixed length cached embeddings as a way to tokenize sequences.
+        Args:
+            cache: str, path to cache
+        """
+        self.cache = torch.load(os.path.expanduser(cache))
+
+    def __call__(self, seq=Union[str, list[str]]):
+        """
+        Tokenize a sequence or list of sequences.
+
+        Args:
+            seq: Union[str, list[str]], sequence or list of sequences
+        Returns:
+            torch.Tensor, tokenized sequence
+        """
+        if isinstance(seq, str):
+            return self.cache[seq]
+        return torch.stack([self.cache[s] for s in seq])
