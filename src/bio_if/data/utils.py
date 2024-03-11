@@ -4,6 +4,8 @@ from typing import Callable, Union
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+GB1_IDX = [38, 39, 40, 53]
+
 
 class FastaDataset(Dataset):
     def __init__(
@@ -114,3 +116,36 @@ class CachedEmbedTokenizer:
         if isinstance(seq, str):
             return self.cache[seq]
         return torch.stack([self.cache[s] for s in seq])
+
+
+class FixedIndexTokenizer:
+    def __init__(self, indices: list[int] = GB1_IDX):
+        self.indices = indices
+        self.amino_acids = "ACDEFGHIKLMNPQRSTVWY"
+
+    def __call__(self, seq: Union[str, list[str]]):
+        """
+        Tokenize a sequence or list of sequences.
+
+        Args:
+            seq: Union[str, list[str]], sequence or list of sequences
+        Returns:
+            torch.Tensor, tokenized sequence
+        """
+        if isinstance(seq, str):
+            return self._tokenize(seq)
+        return torch.stack([self._tokenize(s) for s in seq])
+
+    def _tokenize(self, seq: str) -> torch.Tensor:
+        """
+        Tokenize a sequence.
+
+        Args:
+            seq: str, sequence
+        Returns:
+            torch.Tensor, tokenized sequence
+        """
+        # convert to one hot
+        return torch.eye(20)[
+            torch.tensor([self.amino_acids.index(seq[i]) for i in self.indices])
+        ].reshape(-1)

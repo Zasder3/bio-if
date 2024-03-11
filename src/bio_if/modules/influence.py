@@ -3,10 +3,12 @@
 Adapted from https://github.com/nrimsky/InfluenceFunctions.
 """
 
-import torch
 from abc import ABC, abstractmethod
-from typing import List, Callable
+from typing import Callable, List, Tuple
+
+import torch
 import einops
+from tqdm import tqdm
 
 
 class InfluenceCalculable(ABC):
@@ -48,7 +50,7 @@ def get_ekfac_factors_and_pseudo_grads(
     ]
     grads = [[] for _ in range(len(mlp_blocks))]
     tot = 0
-    for data, target in dataset:
+    for data, target in tqdm(dataset):
         model.zero_grad()
         data = data.to(device)
         target = target.to(device)
@@ -68,7 +70,7 @@ def get_ekfac_factors_and_pseudo_grads(
             d_s_l = block.get_d_s_l()
             grad_cov = torch.einsum("...ti,...tj->tij", d_s_l, d_s_l)
             kfac_grad_covs[i] += grad_cov.mean(dim=0)
-            grads[i].append(block.get_d_w_l())
+            grads[i].append(block.get_d_w_l().cpu())
         tot += 1
     kfac_input_covs = [A / tot for A in kfac_input_covs]
     kfac_grad_covs = [S / tot for S in kfac_grad_covs]
@@ -83,7 +85,7 @@ def get_grads(
     loss_fn: Callable,
 ):
     grads = [[] for _ in range(len(mlp_blocks))]
-    for data, target in dataset:
+    for data, target in tqdm(dataset):
         model.zero_grad()
         data = data.to(device)
         target = target.to(device)
@@ -94,7 +96,7 @@ def get_grads(
         loss = loss_fn(output, target)
         loss.backward()
         for i, block in enumerate(mlp_blocks):
-            grads[i].append(block.get_d_w_l())
+            grads[i].append(block.get_d_w_l().cpu())
     return grads
 
 
@@ -103,7 +105,7 @@ def compute_lambda_ii(train_grads, q_a, q_s):
     n_examples = len(train_grads)
     squared_projections_sum = 0.0
     for j in range(n_examples):
-        dtheta = train_grads[j]
+        dtheta = train_grads[j].to(q_a.device)
         result = (q_s @ dtheta @ q_a.T).view(-1)
         squared_projections_sum += result**2
     lambda_ii_avg = squared_projections_sum / n_examples
@@ -117,7 +119,7 @@ def get_ekfac_ihvp(
     ihvp = []
     for i in range(len(search_grads)):
         V = search_grads[i]
-        stacked = torch.stack(V)
+        stacked = torch.stack(V).to(kfac_input_covs[i].device)
         # Performing eigendecompositions on the input and gradient covariance matrices
         q_a, _, q_a_t = torch.svd(kfac_input_covs[i])
         q_s, _, q_s_t = torch.svd(kfac_grad_covs[i])
@@ -143,9 +145,9 @@ def get_ekfac_ihvp(
 
 
 def get_query_grad(
-    model, query, mlp_blocks: List[InfluenceCalculable], device, loss_fn
+    model, query, mlp_blocks: List[InfluenceCalculable], device, query_fn
 ):
-    grads = get_grads(model, [query], mlp_blocks, device, loss_fn)
+    grads = get_grads(model, [query], mlp_blocks, device, query_fn)
     return torch.cat([q[0].view(-1) for q in grads])
 
 
@@ -157,23 +159,52 @@ def get_influences(ihvp, query_grad):
 
 
 def influence(
-    model,
+    model: torch.nn.Module,
     mlp_blocks: List[InfluenceCalculable],
-    queries,
-    gradient_fitting_data,
-    search_data,
-    topk,
-    device,
-    loss_fn,
+    queries: List[Tuple[torch.Tensor, torch.Tensor]],
+    gradient_fitting_data: List[Tuple[torch.Tensor, torch.Tensor]],
+    search_data: List[Tuple[torch.Tensor, torch.Tensor]],
+    device: torch.device,
+    loss_fn: Callable,
+    topk: int = None,
+    query_fn: Callable = None,
+    aggregate_query_grads: bool = False,
 ):
+    """
+    Calculate the influence of the training samples on the query sequences given loss and query functions.
+
+    Args:
+        model: The model to calculate the influence for
+        mlp_blocks: The blocks of the model to calculate the influence for
+        queries: The query sequences to calculate the influence for
+        gradient_fitting_data: The data to fit the gradients
+        search_data: The data to calculate the search gradients
+        topk: The number of top influences to return
+        device: The device to run the calculations on
+        loss_fn: The loss function to use
+        query_fn: The query function to use
+        aggregate_query_grads: Whether to aggregate the gradients of the queries
+    Returns:
+        if topk is None:
+            top_influences: All influences
+        else:
+            all_top_training_samples: The top training samples for each query
+            all_top_influences: The top influences for each query
+    """
+    if query_fn is None:
+        query_fn = loss_fn
+
+    print("Computing EKFAC factors and pseudo gradients")
     kfac_input_covs, kfac_grad_covs, pseudo_grads = (
         get_ekfac_factors_and_pseudo_grads(
             model, gradient_fitting_data, mlp_blocks, device, loss_fn
         )
     )
 
+    print("Computing search gradients")
     search_grads = get_grads(model, search_data, mlp_blocks, device, loss_fn)
 
+    print("Computing iHVP")
     ihvp = get_ekfac_ihvp(
         kfac_input_covs, kfac_grad_covs, pseudo_grads, search_grads
     )
@@ -181,11 +212,31 @@ def influence(
     all_top_training_samples = []
     all_top_influences = []
 
-    for query in queries:
-        query_grad = get_query_grad(model, query, mlp_blocks, device, loss_fn)
-        top_influences = get_influences(ihvp, query_grad)
+    if aggregate_query_grads:
+        aggregated_query_grads = None
+        for query in queries:
+            if aggregated_query_grads is None:
+                aggregated_query_grads = get_query_grad(
+                    model, query, mlp_blocks, device, loss_fn
+                ).to(device)
+            else:
+                aggregated_query_grads += get_query_grad(
+                    model, query, mlp_blocks, device, loss_fn
+                ).to(device)
+        aggregated_query_grads /= len(queries)
+        top_influences = get_influences(ihvp, aggregated_query_grads)
+    else:
+        for query in queries:
+            query_grad = get_query_grad(
+                model, query, mlp_blocks, device, loss_fn
+            ).to(device)
+            top_influences = get_influences(ihvp, query_grad)
+
+    if topk is not None:
         top_influences, top_samples = torch.topk(top_influences, topk)
         all_top_training_samples.append(top_samples)
         all_top_influences.append(top_influences)
 
-    return all_top_training_samples, all_top_influences
+        return all_top_training_samples, all_top_influences
+    else:
+        return top_influences

@@ -35,7 +35,12 @@ class MLPBlock(InfluenceCalculable, torch.nn.Module):
         # Return the input to the linear layer as a homogenous vector
         return (
             torch.cat(
-                [self.input, torch.ones((self.input.shape[0], 1))],
+                [
+                    self.input,
+                    torch.ones(
+                        (self.input.shape[0], 1), device=self.input.device
+                    ),
+                ],
                 dim=-1,
             )
             .clone()
@@ -55,4 +60,5 @@ class MLPBlock(InfluenceCalculable, torch.nn.Module):
         w_grad = self.linear.weight.grad
         b_grad = self.linear.bias.grad.unsqueeze(-1)
         full_grad = torch.cat([w_grad, b_grad], dim=-1)
-        return full_grad.clone().detach()
+        full_grad = full_grad.clone().detach()
+        return full_grad
