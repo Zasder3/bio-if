@@ -46,6 +46,8 @@ class FastaDataset(Dataset):
                 ):
                     # add data to seqs and labels
                     seq = lines[i + 1].strip()
+                    if self.tokenizer_fn is not None:
+                        seq = self.tokenizer_fn(seq)
                     label = self._header_to_label(lines[i])
                     self.seqs.append(seq)
                     self.labels.append(label)
@@ -76,13 +78,6 @@ class FastaDataset(Dataset):
     def __getitem__(self, idx):
         return self.seqs[idx], self.labels[idx]
 
-    def collate_fn(self, batch):
-        # batch is a list of tuples, we want to return a tuple of tensors
-        seqs, labels = zip(*batch)
-        if self.tokenizer_fn is not None:
-            seqs = self.tokenizer_fn(seqs)
-        return seqs, torch.stack(labels)
-
     def get_dataloader(
         self, batch_size: int, shuffle: bool = False, drop_last: bool = False
     ):
@@ -91,7 +86,6 @@ class FastaDataset(Dataset):
             batch_size=batch_size,
             shuffle=shuffle,
             drop_last=drop_last,
-            collate_fn=self.collate_fn,
         )
 
 
