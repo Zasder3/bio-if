@@ -7,3 +7,4 @@ build
 *.egg
 *.gz
 src/bio_if/data/TAPE/SS3/secondary_structure
+*analyses
