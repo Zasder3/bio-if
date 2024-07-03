@@ -6,5 +6,7 @@ build
 *.egg-info
 *.egg
 *.gz
+!studies.tar.gz
 src/bio_if/data/TAPE/SS3/secondary_structure
+experiments/dms/studies
 *analyses
