@@ -1,3 +1,4 @@
+from typing import List, Optional
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -8,7 +9,7 @@ BATCH_TYPE = dict[str, torch.Tensor]
 
 
 class MLMTask(Task):
-    def __init__(self, special_token_ids: list[int]):
+    def __init__(self, special_token_ids: list[int], is_esm: bool = False):
         super().__init__()
         self.special_token_ids = special_token_ids
 
@@ -39,25 +40,40 @@ class MLMTask(Task):
         model: nn.Module,
     ) -> torch.Tensor:
         # Copied from: https://github.com/MadryLab/trak/blob/main/trak/modelout_functions.py.
-        logits = model(
-            input_ids=batch["input_ids"],
-            attention_mask=batch["attention_mask"],
-        ).logits
+        # logits = model(
+        #     input_ids=batch["input_ids"],
+        #     attention_mask=batch["attention_mask"],
+        # ).logits
 
-        # Mask out special tokens from loss computation.
-        for special_token_id in self.special_token_ids:
-            batch["attention_mask"] = batch["attention_mask"] * (batch["input_ids"] != special_token_id).float()
+        # # Mask out special tokens from loss computation.
+        # for special_token_id in self.special_token_ids:
+        #     batch["attention_mask"] = batch["attention_mask"] * (batch["input_ids"] != special_token_id).float()
 
-        labels = batch["input_ids"]
-        logits_correct = logits.view(-1, logits.size(-1))
-        logits_correct = logits_correct[torch.arange(len(labels.view(-1))), labels.view(-1)]
-        logits_correct = logits_correct.view(*labels.size())
+        # labels = batch["input_ids"]
+        # logits_correct = logits.view(-1, logits.size(-1))
+        # logits_correct = logits_correct[torch.arange(len(labels.view(-1))), labels.view(-1)]
+        # logits_correct = logits_correct.view(*labels.size())
 
-        cloned_logits = logits.clone()
-        cloned_logits = cloned_logits.view(-1, cloned_logits.size(-1))
-        cloned_logits[torch.arange(len(labels.view(-1))), labels.view(-1)] = float("-inf")
-        cloned_logits = cloned_logits.view(*logits.size())
+        # cloned_logits = logits.clone()
+        # cloned_logits = cloned_logits.view(-1, cloned_logits.size(-1))
+        # cloned_logits[torch.arange(len(labels.view(-1))), labels.view(-1)] = float("-inf")
+        # cloned_logits = cloned_logits.view(*logits.size())
 
-        margins = logits_correct - cloned_logits.logsumexp(dim=-1)
-        margins = margins * batch["attention_mask"]
-        return -margins.sum()
+        # margins = logits_correct - cloned_logits.logsumexp(dim=-1)
+        # margins = margins * batch["attention_mask"]
+        # return -margins.sum()
+        return self.compute_train_loss(batch, model, sample=False)
+    
+class ESMMLMTask(MLMTask):
+    def __init__(self, special_token_ids: list[int], num_layers: int):
+        super().__init__(special_token_ids)
+        self.num_layers = num_layers
+    
+    def tracked_modules(self) -> List[str]:
+        all_modules = []
+
+        for i in range(self.num_layers):
+            all_modules.append(f"esm.encoder.layer.{i}.intermediate.dense")
+            all_modules.append(f"esm.encoder.layer.{i}.output.dense")
+        
+        return all_modules

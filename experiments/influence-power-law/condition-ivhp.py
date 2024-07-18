@@ -12,24 +12,16 @@ import torch
 
 from kronfluence import Analyzer, prepare_model
 from kronfluence.utils.dataset import DataLoaderKwargs
-from kronfluence.utils.state import release_memory
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
 from bio_if.tasks import ESMMLMTask
 
-# model_name = "facebook/esm2_t36_3B_UR50D"
-# model_name = "facebook/esm2_t33_650M_UR50D"
-# model_name = "facebook/esm2_t30_150M_UR50D"
-# model_name = "facebook/esm2_t12_35M_UR50D"
-
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 
 @click.command()
-@click.option('--model_name', default="facebook/esm2_t12_35M_UR50D", help='Model name', type=str)
-@click.option('--seed', default=0, help='Seed', type=int)
-@click.option('--per_device_batch_size', default=128, help='Per device batch size', type=int)
-@click.option('--study_name', default='GCN4_YEAST_Staller_2018', help='Study name', type=str)
-def main(model_name: str, seed: int, per_device_batch_size: int, study_name: str):
+@click.option('--model_name', default="facebook/esm2_t33_650M_UR50D", help='Model name', type=str)
+@click.option('--per_device_batch_size', default=16, help='Per device batch size', type=int)
+def main(model_name: str, per_device_batch_size: int):
     is_ddp = os.environ.get("WORLD_SIZE") is not None
     if is_ddp:
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -44,19 +36,12 @@ def main(model_name: str, seed: int, per_device_batch_size: int, study_name: str
     # remove model.esm.contact_head from model
     del model.esm.contact_head
 
-    all_dms_df = pd.read_csv('DMS_substitutions.csv')
-    seq = all_dms_df[all_dms_df['DMS_id'] == study_name]['target_seq'].iloc[0]
-    seqs_df = pd.read_csv(f'studies/{study_name}.csv')
-    # sample 1000 sequences without replacement
-    seqs_df = seqs_df.sample(n=1000, random_state=seed, replace=False)
-    seqs = seqs_df['mutated_sequence'].tolist()
+    # process data
+    df = pd.read_csv('uniref90_random_10k.csv')
+    seqs = df['seq'].tolist()
 
     ds = Dataset.from_dict({'seq': seqs})
     ds = ds.map(lambda x: tokenizer(x['seq']))
-
-    test_ds = Dataset.from_dict({'seq': [seq]})
-    test_ds = test_ds.map(lambda x: tokenizer(x['seq']))
-
 
     collator_fn = DataCollatorWithPadding(tokenizer)
     task = ESMMLMTask(tokenizer.all_special_ids, num_layers=len(model.esm.encoder.layer))
@@ -66,7 +51,7 @@ def main(model_name: str, seed: int, per_device_batch_size: int, study_name: str
     model = torch.compile(model)
 
     analyzer = Analyzer(
-        analysis_name=f"{model_name}_{study_name}_seed={seed}",
+        analysis_name=f"{model_name}",
         task=task,
         model=model,
         cpu=False,
@@ -78,20 +63,10 @@ def main(model_name: str, seed: int, per_device_batch_size: int, study_name: str
 
     print("Beginning Analysis")
     analyzer.fit_all_factors(
-        factors_name=f"{model_name}_{study_name}",
+        factors_name=f"{model_name}_random_10k",
         dataset=ds.select_columns(["input_ids", "attention_mask"]),
         per_device_batch_size=per_device_batch_size,
         overwrite_output_dir=False,
-    )
-
-    analyzer.compute_pairwise_scores(
-        scores_name=f"{model_name}_{study_name}",
-        factors_name=f"{model_name}_{study_name}",
-        overwrite_output_dir=True,
-        train_dataset=ds.select_columns(["input_ids", "attention_mask"]),
-        query_dataset=test_ds.select_columns(["input_ids", "attention_mask"]),
-        per_device_query_batch_size=1,
-        per_device_train_batch_size=per_device_batch_size,
     )
 
 
