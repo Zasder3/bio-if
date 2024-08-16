@@ -23,8 +23,20 @@ AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 @click.option(
     "--per_device_batch_size", default=8, help="Per device batch size", type=int
 )
+@click.option(
+    "--training_data", default="uniref50_random_10k.csv", help="Training data", type=str
+)
+@click.option(
+    "--sequence_of_interest", help="Sequence of interest in a FASTA", type=str
+)
 @click.option("--compile", default=False, help="Compile model", type=bool)
-def main(model_name: str, per_device_batch_size: int, compile: bool):
+def main(
+    model_name: str,
+    per_device_batch_size: int,
+    training_data: str,
+    sequence_of_interest: str,
+    compile: bool,
+):
     is_ddp = os.environ.get("WORLD_SIZE") is not None
     if is_ddp:
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -42,13 +54,23 @@ def main(model_name: str, per_device_batch_size: int, compile: bool):
     del model.esm.contact_head
 
     # process data
-    df = pd.read_csv("uniref50_random_10k.csv")
-    seqs = df["seq"].tolist()
-    # sort by length in descending order
-    seqs = sorted(seqs, key=len, reverse=True)
+    if training_data.endswith(".csv"):
+        df = pd.read_csv(training_data)
+        seqs = df["seq"].tolist()
+        # sort by length in descending order
+        seqs = sorted(seqs, key=len, reverse=True)
 
-    ds = Dataset.from_dict({"seq": seqs})
-    ds = ds.map(lambda x: tokenizer(x["seq"]))
+        ds = Dataset.from_dict({"seq": seqs})
+        ds = ds.map(lambda x: tokenizer(x["seq"]))
+
+    # process sequence of interest FASTA
+    with open(sequence_of_interest, "r") as f:
+        seq = f.readlines()[1:]
+        seq = [s.strip() for s in seq]
+        seq = "".join(seq)
+
+    test_ds = Dataset.from_dict({"seq": [seq]})
+    test_ds = test_ds.map(lambda x: tokenizer(x["seq"]))
 
     collator_fn = DataCollatorWithPadding(tokenizer)
     task = ESMMLMTask(
@@ -70,12 +92,17 @@ def main(model_name: str, per_device_batch_size: int, compile: bool):
     dataloader_kwargs = DataLoaderKwargs(collate_fn=collator_fn)
     analyzer.set_dataloader_kwargs(dataloader_kwargs)
 
-    print("Beginning Analysis")
-    analyzer.fit_all_factors(
+    print("Loading Factors")
+    training_data_name = training_data.split("/")[-1].split(".")[0]
+    sequence_of_interest_name = sequence_of_interest.split("/")[-1].split(".")[0]
+    analyzer.compute_pairwise_scores(
+        scores_name=f"{training_data_name}_{sequence_of_interest_name}",
         factors_name=f"{model_name}_random_10k",
-        dataset=ds.select_columns(["input_ids", "attention_mask"]),
-        per_device_batch_size=per_device_batch_size,
         overwrite_output_dir=False,
+        train_dataset=ds.select_columns(["input_ids", "attention_mask"]),
+        query_dataset=test_ds.select_columns(["input_ids", "attention_mask"]),
+        per_device_query_batch_size=1,
+        per_device_train_batch_size=per_device_batch_size,
     )
 
 
